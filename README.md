@@ -27,6 +27,6 @@
 
 ## History
 
-| Week | Name |    Date    |
+| Week | Subjects |    Date    |
 | :-: | :--: | :--------: |
-|  1  | [Your First Component](https://react.dev/learn/your-first-component)<br>[Importing and Exporting Components](https://react.dev/learn/importing-and-exporting-components)<br>[Writing Markup with JSX](https://react.dev/learn/writing-markup-with-jsx) | 2025.11.04 |
+|  [01](./week-01/)  | [Your First Component](https://react.dev/learn/your-first-component)<br>[Importing and Exporting Components](https://react.dev/learn/importing-and-exporting-components)<br>[Writing Markup with JSX](https://react.dev/learn/writing-markup-with-jsx) | 2025.11.04 |
