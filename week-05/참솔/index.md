@@ -358,3 +358,90 @@ export const initialTravelPlan = {
 - 깊은 계층구조를 가진 state는 update하기 어려우므로, 가능한 평평하게(flat) 만든다.
 - 객체 state의 깊이는 얼마든지 깊어질 수 있지만, flat하게 만들수록 여러 가지 문제들을 해결할 수 있다.
 - Flatten state는 쉽게 변경할 수 있고 다른 nested object에서 data가 중복되지 않도록 한다.
+
+## [Sharing State Between Components](https://react.dev/learn/sharing-state-between-components)
+
+> **Summary**
+>
+> - Component 간에 공유해야 하는 shared state는 parent로 올리고(lift up), props를 통해 children으로 내려준다(pass down).
+> - 특정 component에 정의한 state를 parent로 끌어올리거나 children의 local state로 내려주면서 'Single source of truth' 원칙에 따라 state를 소유할 component를 결정한다.
+> - Component를 작성할 때 controlled 또는 uncontrolled로 만들지 결정한다.
+>   - Controlled : Component render 결과를 결정하는 정보를 props를 통해 parent 로부터 전달받는 component
+>   - Uncontrolled : Component가 render 결과로 보여줄 정보들을 local state로 관리하는 component
+>   - 유연성(flexibility)과 사용 편의성을 고려해서 결정한다.
+
+### Lifting State Up
+
+- Component가 개별적으로 state를 가지면 두 component는 독립적으로 동작함
+
+  ```javascript
+  import { useState } from 'react';
+
+  function Panel({ title, children }) {
+    const [isActive, setIsActive] = useState(false);
+    return (...);
+  }
+
+  export default function Accordion() {
+    // 'About' panel에서 `isActive` 상태 변경이 'Etymology' panel에 영향을 미치지 않음
+    return (
+      <>
+        <h2>Almaty, Kazakhstan</h2>
+        <Panel title="About">...</Panel>
+        <Panel title="Etymology">...</Panel>
+      </>
+    );
+  }
+  ```
+
+- 두 component가 항상 함께 변경되어야 한다면 두 component의 가장 가까운 공통 부모로 state를 옮기고 props로 전달
+
+  ```javascript
+  import { useState } from "react";
+
+  export default function Accordion() {
+    const [activeIndex, setActiveIndex] = useState(0);
+    return (
+      <>
+        <h2>Almaty, Kazakhstan</h2>
+        <Panel
+          title="About"
+          isActive={activeIndex === 0}
+          onShow={() => setActiveIndex(0)}
+        >
+          ...
+        </Panel>
+        <Panel
+          title="Etymology"
+          isActive={activeIndex === 1}
+          onShow={() => setActiveIndex(1)}
+        >
+          ...
+        </Panel>
+      </>
+    );
+  }
+
+  function Panel({ title, children, isActive, onShow }) {
+    return (
+      <section className="panel">
+        <h3>{title}</h3>
+        {isActive ? <p>{children}</p> : <button onClick={onShow}>Show</button>}
+      </section>
+    );
+  }
+  ```
+
+### Controlled and uncontrolled components
+
+- Uncontrolled component : Local state를 갖는 component. Parent가 상태 변경에 영향을 미치지 않음
+- Controlled component : 중요한 정보가 local state가 아닌 props를 통해 다뤄지는 component
+- Uncontrolled component는 쉽게 사용할 수 있지만 유연성은 떨어짐
+- Controlled component는 가장 유연하지만 parent components가 props로 상태를 관리해야 함
+- Component를 작성할 때, 어떤 정보를 controlled로 관리할 지(props로 전달할 지) 또는 uncontrolled로 관리할 지(local state로 관리할 지) 고려해야 함
+
+### The single source of truth for each state
+
+- **Single source of truth** : state는 특정 component가 가지고 관리한다는 원칙
+- SSoT 원칙에 따라 state를 소유할 component를 결정해야 함
+- Shared state를 여러 component에서 중복으로 정의하는 대신, state를 parent로 lift up 하고 props를 통해 children으로 pass down
