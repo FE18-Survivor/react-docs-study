@@ -465,3 +465,269 @@ export default function MyForm() {
 - 따라서, **React에서 ref를 통해 DOM을 직접 변경하는 작업을 주의해야 한다.**
 - React가 갱신하지 않는 DOM node는 ref를 통해 직접 조작해도 된다.
 - 가령, Child를 갖지 않는 빈 `<div>`는 React에서 children list를 touch할 일이 없으므로 ref를 통해 DOM을 직접 조작해도 괜찮다.
+
+## [Synchronizing with Effects](https://react.dev/learn/synchronizing-with-effects)
+
+> **Summary**
+>
+> - Component에서 side effect를 실행하려면 rendering 이후(commit phase 이후)에 실행해야 함
+> - 'Effect'는 rendering에 의해 실행할 side effect를 정의하는 방법
+>   - Render based side effect는 component를 external system과 동기화하는 작업
+>   - Browser API 호출, server connection 설정, analytics log 전송 등
+> - `useEffect(callback, dependencies?)` hook으로 effect 정의
+>   - `callback` 함수에 side effect 작성
+>     - Effect 내부에서 state를 변경할 때 무한 루프에 빠지지 않도록 주의
+>     - `callback` 함수에서 cleanup 함수를 반환하여 external system과의 동기화를 해제할 수 있음
+>       - Component가 re-render 될 때 이전 render에서 반환한 cleanup 함수 실행
+>       - Component가 unmount 될 때 latest render에서 반환한 cleanup 함수 실행
+>   - `dependencies` array에 effect가 의존하는 값들을 전달해서, 해당 값이 변경될 때만 effect가 재실행되도록 설정
+>     - 배열을 전달하지 않으면 render 될 때마다 `callback` 함수 실행
+>     - 빈 배열(`[]`)을 전달하면 최초 render(mount) 시점에 한 번만 `callback` 함수 실행
+>     - 배열에 값을 담아 전달하면 현재 render에서 해당 값이 이전 render와 다를 때 `callback` 함수 실행 (`Object.is()`로 비교)
+> - Strict mode를 활성화하면 개발 환경에서 `callback` 함수가 두 번 실행되어 잠재적인 bug를 조기에 발견할 수 있음
+>   - 이 때, Effect가 한 번 호출될 때와 두 번 호출될 때 user-visible behavior에 차이가 없어야 함
+>   - Effect가 두 번 호출되면서 문제가 발생하는 경우,
+>     - Side effect logic을 한 번만 실행하는 방향으로 해결하지 않는다. (문제를 해결하는 방법이 아님)
+>     - Cleanup 함수를 통해 이전 render에서의 side effect를 해제하는 방식으로 해결
+> - Server에서 data를 가져와서 보여줘야 하는 경우,
+>   - Effect에서 mount 직후 data fetching logic을 실행할 수 있다.
+>   - 이 경우, race condition을 해결하거나 preload 및 caching 등을 구현하기 어려울 수 있다.
+>   - Server-rendered HTML에 data를 포함시키고 싶거나 client-side caching 등을 구현하고 싶다면 TanStack Query, useSWR 등 라이브러리를 활용한다.
+
+---
+
+- "Effect"를 사용해서 component를 rendering 이후에 external system과 동기화(synchronize) 시킬 수 있다.
+- External system
+  - Non-React component based on the React state
+  - Server connection 설정
+  - Component가 화면에 나타났을 때 analytics log 전송
+- **Effect** : rendering에 의해 발생하는 side effect
+  - React component에는 두 종류의 logic이 존재함
+    1. Rendering code : Props와 state를 계산한 결과를 JSX로 반환하는 순수(pure) 코드
+    2. Event handlers : user action에 의해 발생하는 "side effect"를 실행하는 함수 (e.g. update an input field, HTTP POST request, navigate to another screen 등)
+  - 두 가지 logic만 가지고는 component가 screen에 나타났을 때 side effect를 발생시킬 수 없음
+    - Component 함수의 top level code는 rendering 중 실행되므로 side effect 실행 불가
+    - 하지만, component가 화면에 나타났을 때는 명시적으로 user action이 발생하지 않으므로 side effect를 실행시키기 어려움
+  - Effect는 **특정 event가 아닌 rendering에 의해 발생하는 side effect를 정의**
+    - Chat message를 보내는 것은 click event에 의해 발생
+    - Chat server 연결은 interaction과 무관하게 발생하는 'Effect'
+  - Effect는 **commit phase 이후(screen update 이후)에 실행**되므로, **components를 external system과 동기화**시킬 때 활용
+  - Effect는 external system과 동기화하기 위한 목적으로 사용되므로, **다른 state에 따라 특정 state를 조정(adjust)하는 목적이라면 Effect가 필요하지 않을 수 있음**
+
+### How to write an Effect
+
+- React의 `useEffect(callback, dependencies?)` hook으로 effect 정의
+  - `callback` : Effect(side effect)를 실행하는 함수
+  - `dependencies` : re-render 후 `useEffect`가 재호출될 때 `callback` 함수의 재실행 여부를 결정하는 값들의 array
+- React는 component가 render 될 때마다 screen을 갱신(commit)한 뒤 `useEffect`의 `callback` 함수를 실행
+
+  - **`callback` 함수 실행을 render가 screen에 반영된 이후 시점으로 지연(delay)**시키는 것
+  - `<video>` 요소를 `isPlaying` prop에 따라 재생/일시정지하는 예시
+
+    ```javascript
+    import { useEffect, useRef } from "react";
+
+    function VideoPlayer({ src, isPlaying }) {
+      const ref = useRef(null);
+
+      // ⚠️ 최초 render 시점에는 `ref` 객체가 초기화되지 않았기 때문에,
+      // 아래와 같이 component 함수의 top level에서 실행할 수 없음
+      //
+      // if (isPlaying) {
+      //   ref.current.play();
+      // } else {
+      //   ref.current.pause();
+      // }
+
+      // ✅ `ref` 객체는 commit phase 이후에 초기화되므로 `useEffect` 안에서는 안전하게 실행 가능
+      useEffect(() => {
+        if (isPlaying) {
+          ref.current.play();
+        } else {
+          ref.current.pause();
+        }
+      });
+
+      return <video ref={ref} src={src} loop playsInline />;
+    }
+    ```
+
+  - Effect 내부에서 state를 변경할 때 무한 루프가 발생하지 않도록 주의
+    - 기본적으로 'Effect'(`useEffect`의 `callback`)는 render 될 때마다 호출되므로, 아래 코드는 무한 루프에 빠지게 됨
+      ```javascript
+      const [count, setCount] = useState(0);
+      useEffect(() => {
+        setCount(count + 1);
+      });
+      ```
+    - Component가 render 될 때마다 setter 함수를 실행
+    - State setter 함수가 실행되면 re-render를 trigger
+
+- `callback`이 불필요하게 재실행되는 것을 막기 위해 `dependencies` 사용
+  - External system과 동기화하는 작업은 느리기 때문에, 실제로 필요해지기 전 까지는 effect 실행을 건너뛰고 싶을 수 있음
+  - 또는, component가 나타날 때마다(render 될 때마다) effect가 실행되는 동작 자체가 잘못된 것일 수 있음
+  - `dependencies`에 array를 전달해서 React가 effect(`callback` 함수) 재실행을 건너뛰도록 만들 수 있음
+    - 아무 값도 전달하지 않으면 render 될 때마다 `callback` 함수 실행
+      ```javascript
+      useEffect(() => {
+        // ...
+      });
+      ```
+    - 빈 배열(`[]`)을 전달하면 최초 render 시점에 한 번만 `callback` 함수 실행
+      ```javascript
+      useEffect(() => {
+        // ...
+      }, []);
+      ```
+    - `callback` 함수 내부의 effect logic이 의존하는 다른 값들을 array로 전달하면 해당 값이 **이전 render와 동일한 경우에만 skip**
+      ```javascript
+      useEffect(() => {
+        if (isPlaying) {
+          ref.current.play();
+        } else {
+          ref.current.pause();
+        }
+      }, [isPlaying]); // ...so it must be declared here!
+      ```
+      - `Object.is(a, b)`로 이전/현재 render에서의 값이 같은지 비교
+      - `callback`에서 의존하는 값을 `dependencies`에 설정하지 않으면 lint error 발생
+      - 이 때, `ref`는 **바뀌지 않는 값(stable identity)** 이므로 array에 포함하지 않아도 됨
+        - `useRef`는 **render 간에 동일한 ref object를 반환하므로 effect를 재실행 시키지 않음**
+        - 만약, `ref`를 parent component로부터 prop으로 전달받는다면 **항상 동일한 object라고 보장할 수 없으므로 array에 포함해야 함**
+      - `useState`가 반환하는 setter 함수도 stable identity 이므로 array에 포함하지 않아도 됨
+- `callback` 함수에서 cleanup 함수를 반환하여 external system과의 동기화를 해제할 수 있음
+  - Effect에서 server 연결 등의 작업을 실행하는 경우, component가 unmount 될 때 연결을 해제하지 않으면 component가 여러 곳에서 재사용될 때 server 연결이 중복되는 문제가 발생할 수 있음
+    ```javascript
+    export default function ChatRoom() {
+      useEffect(() => {
+        const connection = createConnection();
+        connection.connect();
+      }, []);
+      return <h1>Welcome to the chat!</h1>;
+    }
+    ```
+    - `ChatRoom` component가 mount 될 떄 chat server와 연결
+    - 이 때, 다른 화면으로 이동하면 `ChatRoom` component는 unmount 되지만 server 연결은 유지됨
+    - `ChatRoom`이 다시 mount 되면 이전 연결이 유지된 채로 새 연결이 중복 생성됨
+  - 이 문제를 해결하기 위해, `callback`에서 연결을 해제하는 **cleanup 함수**를 반환
+    - React는 effect를 재실행하거나(re-render) component가 unmount 될 때 **이전 effect에서 반환한 cleanup 함수**를 실행
+    - `dependencies`에 빈 배열(`[]`)을 설정한 `useEffect`는 mount 시점에 `callback`을 한 번 실행하고, page 이동 등으로 해당 component가 unmount 될 때 cleanup 함수를 한 번 실행하게 됨
+    ```javascript
+    useEffect(() => {
+      const connection = createConnection();
+      connection.connect();
+      return () => connection.disconnect();
+    }, []);
+    ```
+
+### How to handle the Effect firing twice in development?
+
+- React는 effect와 관련된 버그를 미리 발견할 수 있도록, "Strict Mode"를 활성화 했을 때 development mode에서 `callback`을 두 번씩 실행함
+- 이 경우, **"Effect를 한 번만 실행하는 방법"을 찾을 게 아니라, "Effect가 remounting 이후에도 올바르게 동작하게 만드는 방법"을 고민해야 함**
+  - 사용자는 effect가 한 번 실행되는지 여러 번 실행되는지 구분할 수 없어야 한다.
+  - 특히, **`ref` object를 사용해서 effect가 두 번 실행되는 것을 막지 않는다.**
+    ```javascript
+    const connectionRef = useRef(null);
+    useEffect(() => {
+      // 🚩 This wont fix the bug!!!
+      // 사용자가 다른 page로 나갔다 돌아오는 경우 발생하는 문제를 해결해주지 못한다.
+      if (!connectionRef.current) {
+        connectionRef.current = createConnection();
+        connectionRef.current.connect();
+      }
+    }, []);
+    ```
+  - 대부분의 경우, **cleanup 함수를 구현하면 해결**된다.
+- Common patterns
+  - **Subscribing events** : Effect에서 어떤 것을 subscribe 했다면 cleanup 함수에서 unsubscribe
+    ```javascript
+    useEffect(() => {
+      function handleScroll(e) {
+        console.log(window.scrollX, window.scrollY);
+      }
+      window.addEventListener("scroll", handleScroll);
+      return () => window.removeEventListener("scroll", handleScroll);
+    }, []);
+    ```
+  - **Triggering animations** : Effect에서 animation을 시작했다면 cleanup 함수에서 초깃값으로 reset
+    ```javascript
+    useEffect(() => {
+      const node = ref.current;
+      node.style.opacity = 1; // Trigger the animation
+      return () => {
+        node.style.opacity = 0; // Reset to the initial value
+      };
+    }, []);
+    ```
+  - **Fetching data** : 어떤 데이터를 fetch 했다면 cleanup 함수에서 fetch 요청을 취소하거나(abort) 결괏값을 무시하도록 설정
+    ```javascript
+    useEffect(() => {
+      let ignore = false;
+      async function startFetching() {
+        const json = await fetchTodos(userId);
+        if (!ignore) {
+          setTodos(json);
+        }
+      }
+      startFetching();
+      return () => {
+        // Closure에 의해 `callback` 함수가 종료되어도 `ignore` 변수 유지
+        ignore = true;
+      };
+    }, [userId]);
+    ```
+    - 기본적으로, 이미 실행된 network request는 취소할 수 없음 (`AbortController`를 사용하면 가능)
+    - 요청을 취소할 수 없다면 요청 결과를 무시해서 application에 영향을 주지 않도록 만들 수 있음
+  - **Sending analytics** : Page visit event 기록
+    ```javascript
+    useEffect(() => {
+      logVisit(url); // Sends a POST request
+    }, [url]);
+    ```
+    - Development mode에서는 strict mode에 의해 `logVisit`이 두 번 호출될 것
+    - Effect는 한 번 실행될 때와 여러 번 실행될 때 사용자가 알아차릴 수 있는 차이를 만들지 않아야 함(there's no user-visible behavior difference)
+    - Development mode에서 `logVisit`은 아무 것도 하지 않아야 하므로 두 번 호출되어도 문제가 없다. Production mode에서는 자연스럽게 한 번만 호출될 것
+    - Analytics event를 debug하려면 dev mode가 아닌 **staging environment**에 배포하면 됨
+  - **Not an Effect: Initializing the application**
+    ```javascript
+    if (typeof window !== "undefined") {
+      // Check if we're running in the browser.
+      checkAuthToken();
+      loadDataFromLocalStorage();
+    }
+    function App() {
+      // ...
+    }
+    ```
+    - App이 시작할 때 한 번만 실행되어야 하는 코드는 component 밖에 작성
+    - Browser가 page를 load한 뒤 한 번만 실행되는 것을 보장
+  - **Not an Effect: Buying a product**
+    - POST 요청을 보내는 경우, cleanup 함수를 사용하더라도 Effect가 두 번 실행될 때 user-visible consequences를 막을 수 없음
+      ```javascript
+      useEffect(() => {
+        // 🔴 Wrong: This Effect fires twice in development, exposing a problem in the code.
+        fetch("/api/buy", { method: "POST" });
+      }, []);
+      ```
+    - 이런 동작들은 Effect가 아닌 user interaction에 의해 발생해야 함 (rendering에 의존하면 안 된다.)
+      ```javascript
+      function handleBuyClick() {
+        fetch("/api/buy", { method: "POST" });
+      }
+      ```
+    - 즉, **remounting이 logic에 문제를 일으킨다면(breaks the logic of app) 이미 존재하는 bug를 드러내는 것**
+
+### What are good alternatives to data fetching in Effects?
+
+- Effect 안에서 data를 `fetch`하는 방법은 CSR app에서 주로 사용되는 방법
+- 하지만, 이 방법은 몇 가지 단점이 있음
+  - Effect가 server에서 실행되지 않으므로 server-rendered HTML에 data가 포함되지 않음
+  - Effect에서 직접 fetching 하면 "network waterfalls" 현상을 만들기 쉬움
+    - '부모 component rendering -> data fetching -> 자식 component rendering -> data fetching' 단계를 거침
+    - Data를 병렬적으로 fetching 하는 것에 비해 느려진다.
+  - Effect에서 직접 fetching하면 preload 또는 cache 할 수 없음 (매번 새로 fetch)
+  - Race condition 등 bug가 발생하지 않도록 boilerplate code를 작성해야 함
+- 이러한 문제를 보완하기 위해 아래 방법들을 먼저 고려하는 것을 추천
+  - Framework의 built-in data fetching mechanism 사용
+  - TanStack Query, useSWR, React Router 등 client-side cache 사용
+- 이런 방법이 적합하지 않을 때 Effects에서 직접 data fetch를 구현
