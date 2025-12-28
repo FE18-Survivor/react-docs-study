@@ -731,3 +731,569 @@ export default function MyForm() {
   - Framework의 built-in data fetching mechanism 사용
   - TanStack Query, useSWR, React Router 등 client-side cache 사용
 - 이런 방법이 적합하지 않을 때 Effects에서 직접 data fetch를 구현
+
+## [You Might Not Need an Effect](https://react.dev/learn/you-might-not-need-an-effect)
+
+> **Summary**
+>
+> - Component에서 `useEffect`를 적게 사용할 수록 component를 유지보수하기 쉬워진다.
+> - 다른 props 또는 state 로부터 계산할 수 있는 값은 state로 만드는 대신 rendering 중에 계산한다.
+> - 다른 props 또는 state가 변경될 때 state를 초기화해야 한다면, 해당 state를 사용하는 component를 분리하고 `key`로 state를 변경시키는 props 또는 다른 state를 전달한다.
+>   - 동일한 위치에 동일한 component를 render 할 때 state가 보존되는(preserve) 동작 활용
+>   - 다른 props 또는 state가 변경되면 component의 `key`가 변경되고, re-render 사이에 다른 component로 인식되어 state가 초기화된다.
+> - User action에 의해 실행되어야 하는 logic은 Effect가 아닌 event handler에서 실행한다.
+> - Component load 후 한 번만 실행되어야 하는 logic은 component 외부 top-level에서 실행시킨다.
+> - React의 외부 data(e.g. third-party library, browser API 등)를 subscribe 하는 경우 Effect 대신 `useSyncExternalStore` hook을 활용한다.
+> - Effect에서 data fetching을 수행하는 경우, race condition을 방지하기 위해 cleanup 함수를 활용해서 stale fetched data를 무시한다.
+
+---
+
+- External system이 없다면 Effect가 필요하지 않음
+  - Render에 사용되는 data를 변환(transform)하는 작업
+    - List를 filtering 해서 화면에 보여주는 경우, Effect에서 state variable을 변경하는건 효율적이지 않음
+    - React는 component function을 호출해서 화면에 보여줄 내용을 계산한 뒤(render) DOM에 변경사항을 반영(commit)하고 Effect를 실행
+    - 즉, Effect에서 state variable을 변경하면 불필요한 re-render가 발생하게 됨
+    - Data 변환 코드를 component의 top level에 작성하면, props나 state가 변경될 때마다 자동으로 다시 실행될 것
+  - User events 관련 작업
+    - Effect가 실행되는 시점에는 어떤 user event가 발생했는지 알 수 없음
+- Effect는 external systems와 동기화할 때만 필요함
+  - jQuery widget을 React state와 동기화
+  - Data fetching (e.g. Search query에 따라 search result를 동기화)
+
+### Updating state based on props or state
+
+- 다른 props 또는 state를 통해 계산할 수 있는 값은 state로 만드는 대신 rendering 중에 계산
+  ```javascript
+  function Form() {
+    const [firstName, setFirstName] = useState("Taylor");
+    const [lastName, setLastName] = useState("Swift");
+  
+    // 🔴 Avoid: redundant state and unnecessary Effect
+    const [fullName, setFullName] = useState('');
+    useEffect(() => {
+      setFullName(firstName + ' ' + lastName);
+    }, [firstName, lastName]);
+  
+    // ✅ Good: calculated during rendering
+    const fullName = firstName + " " + lastName;
+  
+    // ...
+  }
+  ```
+- 이런 방식은 stale state로 먼저 render 한 뒤 곧바로 new state로 re-render 하므로 불필요한 rendering이 발생하여 비효율적임
+
+### Caching expensive calculations
+
+- Rendering 중에 data를 계산하는 logic이 연산량이 많다면 `useMemo` hook을 사용해서 cache(memoize)
+  ```javascript
+  function TodoList({ todos, filter }) {
+    const [newTodo, setNewTodo] = useState("");
+
+    const visibleTodos = useMemo(() => {
+      // ✅ Does not re-run unless todos or filter change
+      return getFilteredTodos(todos, filter);
+    }, [todos, filter]);
+
+    // ...
+  }
+  ```
+  - React compiler를 사용하면 대부분의 경우 `useMemo`를 직접 사용하지 않아도 비싼 연산을 자동으로 memoize 해 줌
+- 비싼 연산인지 판단하는 방법
+  - 실행하는 데에 1ms 이상 걸리는 경우
+  - 코드의 시작과 끝 시점에 `console.time()`을 사용해서 시간 측정 가능
+    ```javascript
+    console.time("filter array");
+    const visibleTodos = getFilteredTodos(todos, filter);
+    console.time("filter array");
+    ```
+
+### Resetting all state when a prop changes
+
+- Props이 변경됨에 따라 state를 초기화해야 하는 경우,
+- Prop을 기준으로 Effect를 통해 state를 초기화하는 대신,
+  ```javascript
+  export default function ProfilePage({ userId }) {
+    const [comment, setComment] = useState('');
+  
+    // 🔴 Avoid: Resetting state on prop change in an Effect
+    useEffect(() => {
+      setComment('');
+    }, [userId]);
+    // ...
+  }
+  ```
+- 해당 prop을 component의 `key`로 전달
+  ```javascript
+  export default function ProfilePage({ userId }) {
+    return <Profile userId={userId} key={userId} />;
+  }
+
+  function Profile({ userId }) {
+    // ✅ This and any other state below will reset on key change automatically
+    const [comment, setComment] = useState("");
+    // ...
+  }
+  ```
+  - React는 **동일한 위치에 render 되는 동일한 component에 대해 state를 유지**
+  - 따라서, 변경되는 prop을 `key`로 사용하면 해당 prop이 변경될 때마다 component의 state를 초기화 할 수 있음
+
+### Adjusting some state when a prop changes
+
+- Prop이 변경될 때 일부 state를 초기화(reset) 또는 조정(adjust)해야 하는 경우,
+- Prop을 기준으로 Effect를 통해 state를 초기화하는 대신,
+  ```javascript
+  function List({ items }) {
+    const [isReverse, setIsReverse] = useState(false);
+    const [selection, setSelection] = useState(null);
+  
+    // 🔴 Avoid: Adjusting state on prop change in an Effect
+    useEffect(() => {
+      setSelection(null);
+    }, [items]);
+    // ...
+  }
+  ```
+- Rendering 중에 직접 data 계산
+  ```javascript
+  function List({ items }) {
+    const [isReverse, setIsReverse] = useState(false);
+    const [selectedId, setSelectedId] = useState(null);
+    // ✅ Best: Calculate everything during rendering
+    const selection = items.find(item => item.id === selectedId) ?? null;
+    // ...
+  }
+  ```
+  - 이 때, **`key` prop에 전달할 수 있고 rendering data를 계산할 때 사용할 수 있는 값**을 state로 저장 (e.g. ID (`selectedId`))
+
+### Sharing logic between event handlers
+
+- 여러 event handler에서 동일한 logic을 반복해서 호출하지 않도록 Effect를 활용하려고 할 수 있음
+  ```javascript
+  function ProductPage({ product, addToCart }) {
+    // 🔴 Avoid: Event-specific logic inside an Effect
+    useEffect(() => {
+      if (product.isInCart) {
+        showNotification(`Added ${product.name} to the shopping cart!`);
+      }
+    }, [product]);
+  
+    function handleBuyClick() {
+      addToCart(product);
+    }
+  
+    function handleCheckoutClick() {
+      addToCart(product);
+      navigateTo('/checkout');
+    }
+    // ...
+  }
+  ```
+- Effect는 component가 mount 될 때에도 실행되므로, `product.isInCart`가 `true`인 경우 re-render 할 때마다  `showNotification` 함수를 반복 호출하는 문제 발생
+- 코드를 page가 보여질 때가 아닌 user action이 발생했을 때 실행시키려면, sharing logic을 함수로 만들어서 각 event handler에서 호출
+  ```javascript
+  function ProductPage({ product, addToCart }) {
+    // ✅ Good: Event-specific logic is called from event handlers
+    function buyProduct() {
+      addToCart(product);
+      showNotification(`Added ${product.name} to the shopping cart!`);
+    }
+  
+    function handleBuyClick() {
+      buyProduct();
+    }
+  
+    function handleCheckoutClick() {
+      buyProduct();
+      navigateTo('/checkout');
+    }
+    // ...
+  }
+  ```
+
+### Sending a POST request
+
+- POST request를 발생시키는 원인이 displaying component가 아니라면 Effect가 필요하지 않음
+  ```javascript
+  function Form() {
+    const [firstName, setFirstName] = useState('');
+    const [lastName, setLastName] = useState('');
+  
+    // ✅ Good: This logic should run because the component was displayed
+    useEffect(() => {
+      post('/analytics/event', { eventName: 'visit_form' });
+    }, []);
+  
+    // 🔴 Avoid: Event-specific logic inside an Effect
+    const [jsonToSubmit, setJsonToSubmit] = useState(null);
+    useEffect(() => {
+      if (jsonToSubmit !== null) {
+        post('/api/register', jsonToSubmit);
+      }
+    }, [jsonToSubmit]);
+  
+    function handleSubmit(e) {
+      e.preventDefault();
+      setJsonToSubmit({ firstName, lastName });
+    }
+    // ...
+  }
+  ```
+- User action에 발생하는 POST request는 event handler에서 처리
+  ```javascript
+  function Form() {
+    const [firstName, setFirstName] = useState('');
+    const [lastName, setLastName] = useState('');
+  
+    // ✅ Good: This logic runs because the component was displayed
+    useEffect(() => {
+      post('/analytics/event', { eventName: 'visit_form' });
+    }, []);
+  
+    function handleSubmit(e) {
+      e.preventDefault();
+      // ✅ Good: Event-specific logic is in the event handler
+      post('/api/register', { firstName, lastName });
+    }
+    // ...
+  }
+  ```
+- Event handler와 Effect 중 어디에 logic을 넣을지 결정할 때, 사용자 관점에서 어떤 종류의 logic인지 생각해 본다.
+  - User interaction에 의해 발생한다면 event handler에 작성
+  - 사용자가 component를 보게 될 때 발생한다면 Effect에 작성
+
+### Chains of computations
+
+- Effect를 chaining 하면 두 가지 문제가 있음
+  ```javascript
+  function Game() {
+    const [card, setCard] = useState(null);
+    const [goldCardCount, setGoldCardCount] = useState(0);
+    const [round, setRound] = useState(1);
+    const [isGameOver, setIsGameOver] = useState(false);
+  
+    // 🔴 Avoid: Chains of Effects that adjust the state solely to trigger each other
+    useEffect(() => {
+      if (card !== null && card.gold) {
+        setGoldCardCount(c => c + 1);
+      }
+    }, [card]);
+  
+    useEffect(() => {
+      if (goldCardCount > 3) {
+        setRound(r => r + 1)
+        setGoldCardCount(0);
+      }
+    }, [goldCardCount]);
+  
+    useEffect(() => {
+      if (round > 5) {
+        setIsGameOver(true);
+      }
+    }, [round]);
+  
+    useEffect(() => {
+      alert('Good game!');
+    }, [isGameOver]);
+  
+    function handlePlaceCard(nextCard) {
+      if (isGameOver) {
+        throw Error('Game already ended.');
+      } else {
+        setCard(nextCard);
+      }
+    }
+  
+    // ...
+  ```
+  1. Effect 갯수 만큼 re-render가 발생하면서 성능 저하
+  2. 성능에 문제가 없더라도, 새로운 요구사항을 추가하기 어려워
+- Rendering 중에 계산할 수 있는 값들은 따로 계산하고, state 변경은 event handler에서 처리
+  ```javascript
+  function Game() {
+    const [card, setCard] = useState(null);
+    const [goldCardCount, setGoldCardCount] = useState(0);
+    const [round, setRound] = useState(1);
+  
+    // ✅ Calculate what you can during rendering
+    const isGameOver = round > 5;
+  
+    function handlePlaceCard(nextCard) {
+      if (isGameOver) {
+        throw Error('Game already ended.');
+      }
+  
+      // ✅ Calculate all the next state in the event handler
+      setCard(nextCard);
+      if (nextCard.gold) {
+        if (goldCardCount < 3) {
+          setGoldCardCount(goldCardCount + 1);
+        } else {
+          setGoldCardCount(0);
+          setRound(round + 1);
+          if (round === 5) {
+            alert('Good game!');
+          }
+        }
+      }
+    }
+  
+    // ...
+  ```
+
+### Initializing the application
+
+- App이 load된 후 한 번만 실행되어야 하는 코드는,
+- Top-level component에 Effect로 작성하는 대신,
+  ```javascript
+  function App() {
+    // 🔴 Avoid: Effects with logic that should only ever run once
+    useEffect(() => {
+      loadDataFromLocalStorage();
+      checkAuthToken();
+    }, []);
+    // ...
+  }
+  ```
+- Top-level variable을 사용해서 한 번만 실행되도록 보장하거나,
+  ```javascript
+  let didInit = false;
+  
+  function App() {
+    useEffect(() => {
+      if (!didInit) {
+        didInit = true;
+        // ✅ Only runs once per app load
+        loadDataFromLocalStorage();
+        checkAuthToken();
+      }
+    }, []);
+    // ...
+  }
+  ```
+- `App.js` 등 entry point의 top-level에 작성해서 개발/상용 환경에 관계 없이 한 번만 실행되는 것을 보장
+  ```javascript
+  if (typeof window !== 'undefined') { // Check if we're running in the browser.
+    // ✅ Only runs once per app load
+    checkAuthToken();
+    loadDataFromLocalStorage();
+  }
+  
+  function App() {
+    // ...
+  }
+  ```
+  - 이 방법은 component가 import 될 때 한 번만 실행됨
+  - Component가 render되기 이전에 실행되므로, 성능 저하를 방지하려면 남용하지 않아야 함
+
+### Notifying parent components about state changes
+
+- Component 내부의 state가 변경되었을 때 parent에 알리기 위해 `onChange` 같은 함수 사용
+- 이 때, `onChange` 함수를 Effect에서 실행하면 불필요한 render를 거쳐야 함
+  ```javascript
+  function Toggle({ onChange }) {
+    const [isOn, setIsOn] = useState(false);
+  
+    // 🔴 Avoid: The onChange handler runs too late
+    useEffect(() => {
+      onChange(isOn);
+    }, [isOn, onChange])
+  
+    function handleClick() {
+      setIsOn(!isOn);
+    }
+  
+    // ...
+  }
+  ```
+  1. `setIsOn` 호출
+  2. `Toggle`이 re-render 되어 Effect에서 `onChange` 실행
+  3. Parent가 state를 변경해서 `Toggle`이 다시 re-render 
+- `onChange` 함수를 Effect 대신 event handler에서 호출하여 re-render가 parent에 의해 한 번만 발생하도록 개선
+  ```javascript
+  function Toggle({ onChange }) {
+    const [isOn, setIsOn] = useState(false);
+  
+    function updateToggle(nextIsOn) {
+      // ✅ Good: Perform all updates during the event that caused them
+      setIsOn(nextIsOn);
+      onChange(nextIsOn);
+    }
+  
+    function handleClick() {
+      updateToggle(!isOn);
+    }
+  
+    // ...
+  }
+  ```
+- 또는 `isOn` state를 lift up 해서 component와 parent state를 동기화하는 작업을 단순하게 만들 수 있음
+  ```javascript
+  // ✅ Also good: the component is fully controlled by its parent
+  function Toggle({ isOn, onChange }) {
+    function handleClick() {
+      onChange(!isOn);
+    }
+  
+    function handleDragEnd(e) {
+      if (isCloserToRightEdge(e)) {
+        onChange(true);
+      } else {
+        onChange(false);
+      }
+    }
+  
+    // ...
+  }
+  ```
+
+### Passing data to the parent
+
+- React에서 data는 parent에서 children으로 흐름
+- 이런 data flow는 문제가 생겼을 때 component chain을 따라 올라가며 원인이 되는 parent component를 추적하기 쉬움
+- Child component에서 parent의 state를 변경하면 data flow가 복잡해지고 버그를 추적하기 어려워짐
+  ```javascript
+  function Parent() {
+    const [data, setData] = useState(null);
+    // ...
+    return <Child onFetched={setData} />;
+  }
+  
+  function Child({ onFetched }) {
+    const data = useSomeAPI();
+    // 🔴 Avoid: Passing data to the parent in an Effect
+    useEffect(() => {
+      if (data) {
+        onFetched(data);
+      }
+    }, [onFetched, data]);
+    // ...
+  }
+  ```
+  - 이 때, parent로 data를 전달하기 위해 Effect에서 `onFetched` 함수를 호출하면 [위 경우](#notifying-parent-components-about-state-changes)와 동일한 문제 발생
+- Child와 parent가 동일한 data를 가져야 한다면, parent가 data를 fetch하고 child에 prop으로 전달
+  ```javascript
+  function Parent() {
+    const data = useSomeAPI();
+    // ...
+    // ✅ Good: Passing data down to the child
+    return <Child data={data} />;
+  }
+  
+  function Child({ data }) {
+    // ...
+  }
+  ```
+
+### Subscribing to an external store
+
+- React state 외부 data(e.g. third-party library, browser API 등)를 subscribe 하는 경우 Effect를 사용하곤 함
+  ```javascript
+  function useOnlineStatus() {
+    // Not ideal: Manual store subscription in an Effect
+    const [isOnline, setIsOnline] = useState(true);
+    useEffect(() => {
+      function updateState() {
+        setIsOnline(navigator.onLine);
+      }
+  
+      updateState();
+  
+      window.addEventListener('online', updateState);
+      window.addEventListener('offline', updateState);
+      return () => {
+        window.removeEventListener('online', updateState);
+        window.removeEventListener('offline', updateState);
+      };
+    }, []);
+    return isOnline;
+  }
+  ```
+- 이 경우, Effect는 React가 이 목적으로 사용하기 위해 제공하는 `useSyncExternalStore` hook으로 대체할 수 있음
+  ```javascript
+  import { useSyncExternalStore } from 'react';
+  
+  function subscribe(callback) {
+    window.addEventListener('online', callback);
+    window.addEventListener('offline', callback);
+    return () => {
+      window.removeEventListener('online', callback);
+      window.removeEventListener('offline', callback);
+    };
+  }
+  
+  function useOnlineStatus() {
+    // ✅ Good: Subscribing to an external store with a built-in Hook
+    return useSyncExternalStore(
+      subscribe, // React won't resubscribe for as long as you pass the same function
+      () => navigator.onLine, // How to get the value on the client
+      () => true // How to get the value on the server
+    );
+  }
+  ```
+  - External store가 변경될 때마다 `subscribe` 함수 실행 (위 코드에서는 `window`)
+  - `useSyncExternalStore`는 `getSnapshot` 또는 `getServerSnapshot` 함수가 반환하는 값을 얻음
+- `useSyncExternalStore` hook을 사용하면 state와 Effect로 직접 subscription을 관리하는 것보다 error가 발생할 가능성이 낮음
+
+### Fetching data
+
+- 대부분의 경우 Effect 안에서 data fetching을 수행함
+- Effect에서 여러 개의 data fetching request가 실행되는 경우 '**race condition**' 발생 가능
+  - 요청을 여러 번 보낼 때, 요청을 보낸 순서와 응답을 받는 순서가 다를 수 있음
+- Race condition 문제를 해결하기 위해 cleanup 함수 사용
+  ```javascript
+  function SearchResults({ query }) {
+    const [results, setResults] = useState([]);
+    const [page, setPage] = useState(1);
+  
+    useEffect(() => {
+      let ignore = false;
+      fetchResults(query, page).then(json => {
+        if (!ignore) {
+          setResults(json);
+        }
+      });
+      
+      return () => {
+        ignore = true;
+      };
+    }, [query, page]);
+  
+    function handleNextPageClick() {
+      setPage(page + 1);
+    }
+    // ...
+  }
+  ```
+  - Effect에서 data fetching이 발생하면 이전 Effect에서 반환된 cleanup 함수에 의해 `ignore` 변수가 `true`로 설정되어 이전 Effect에서 받은 응답을 무시할 수 있음
+- Response cache 문제를 해결하기 위해 built-in data fetching mechanism 활용
+  ```javascript
+  function SearchResults({ query }) {
+    const [page, setPage] = useState(1);
+    const params = new URLSearchParams({ query, page });
+    const results = useData(`/api/search?${params}`);
+  
+    function handleNextPageClick() {
+      setPage(page + 1);
+    }
+  
+    // ...
+  }
+
+  function useData(url) {
+    const [data, setData] = useState(null);
+    useEffect(() => {
+      let ignore = false;
+      fetch(url)
+        .then(response => response.json())
+        .then(json => {
+          if (!ignore) {
+            setData(json);
+          }
+        });
+      return () => {
+        ignore = true;
+      };
+    }, [url]);
+    return data;
+  }
+  ```
