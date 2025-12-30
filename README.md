@@ -1,8 +1,8 @@
-# React 공식 문서 스터디
+# React 공식 문서 스터디 (Learn)
 
 ## Overview
 
-- 도구 : React 공식 문서 (v19.2 기준) ([Learn](https://react.dev/learn), [Reference](https://react.dev/reference/react))
+- 도구 : React 공식 문서 [Learn](https://react.dev/learn) (v19.2 기준)
 - 일정 : 매주 화, 금 오전 10시
 - 진행 방식
   - 정해진 분량을 각자 읽고 스터디 전까지 push
