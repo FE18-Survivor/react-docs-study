@@ -227,7 +227,7 @@ function Item({ name, isPacked }) {
 
 ## props는 단방향 전달(부모 -> 자식)
 
-![props flow](../images/props-flow.png)
+![props flow](./props-flow.png)
 
 # Rendering Lists
 

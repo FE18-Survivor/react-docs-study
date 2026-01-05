@@ -399,11 +399,11 @@ export default function Profile() {
 - Tree는 item 사이의 관계(relationship)를 modeling
 - UI도 tree 구조로 표현할 수 있음 (e.g. DOM, CSSOM)
 - 마찬가지로, React도 component간의 관계를 modeling 하고 관리하기 위해 tree 구조를 사용함
-  ![React UI Tree](../images/react-ui-tree.png)
+  ![React UI Tree](./react-ui-tree.png)
 
 ### The Render Tree
 
-![React Render Tree](../images/react-render-tree.png)
+![React Render Tree](./react-render-tree.png)
 
 - Comopnent를 중첩해서 parent와 child component 개념을 만들 수 있음
 - Parent component는 동시에 다른 comopnent의 child가 될 수 있음
@@ -421,7 +421,7 @@ export default function Profile() {
 
 ### The Module Dependency Tree
 
-![alt text](../images/react-module-tree.png)
+![alt text](./react-module-tree.png)
 
 - Module 간의 의존성도 tree로 modeling 됨
 - Components와 logic을 다른 file(module)로 분리하면서 components, functions, constants 등을 export하는 module을 생성함
